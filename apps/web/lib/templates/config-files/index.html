@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>App</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+    <script>
+      // Runtime error reporter — captures errors and sends to parent via postMessage
+      (function(){
+        var n=0;
+        function r(t,m,s,l,c){
+          if(n>=10)return;n++;
+          try{window.parent.postMessage({type:'preview-runtime-error',payload:{errorType:t,message:m,source:s||'',line:l||0,col:c||0,timestamp:Date.now()}},'*')}catch(e){}
+        }
+        window.onerror=function(m,s,l,c){r('uncaught',String(m),s,l,c)};
+        window.addEventListener('unhandledrejection',function(e){
+          var m=e.reason instanceof Error?e.reason.message:String(e.reason);
+          r('unhandled-rejection',m);
+        });
+        window.addEventListener('load',function(){
+          setTimeout(function(){
+            var root=document.getElementById('root');
+            if(root&&root.children.length===0){r('blank-screen','Root element has no children after load')}
+          },3000);
+        });
+      })();
+    </script>
+  </body>
+</html>

@@ -1,0 +1,19 @@
+{
+  "name": "ecommerce",
+  "version": "1.0.0",
+  "description": "电商应用生成技能包 - 购物车、支付、订单管理、商品展示",
+  "tags": ["电商", "商城", "购物", "支付", "订单", "商品", "ecommerce", "shop", "cart", "payment", "store"],
+  "promptFragments": ["prompts/ecommerce-guide.md"],
+  "templates": ["templates/**/*"],
+  "validators": [],
+  "requiredEntities": ["Product", "Order", "Cart", "CartItem", "Payment", "Category", "Review"],
+  "recommendedComponents": ["card", "table", "badge", "dialog", "select", "tabs", "avatar", "separator"],
+  "dependencies": [],
+  "examplePrompts": [
+    "帮我做一个电商网站",
+    "创建一个在线商城",
+    "做一个购物平台",
+    "Build an e-commerce store",
+    "Create an online shop with shopping cart"
+  ]
+}

@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <!-- 造物 ASpark — App Icon (512x512) -->
+  <!-- Brand Color: Vermilion #E04E2A -->
+  
+  <!-- Background -->
+  <rect width="512" height="512" rx="96" fill="#E04E2A"/>
+  
+  <!-- White Flame -->
+  <g transform="translate(256, 236)">
+    <path fill="#FFFFFF" d="
+      M 0 -130
+      C 26 -76, 62 -16, 62 34
+      C 62 76, 34 110, 0 118
+      C -34 110, -62 76, -62 34
+      C -62 -16, -26 -76, 0 -130
+      Z
+    "/>
+    <path fill="#E04E2A" d="
+      M 0 -30
+      C 12 -12, 24 12, 24 30
+      C 24 48, 12 60, 0 66
+      C -12 60, -24 48, -24 30
+      C -24 12, -12 -12, 0 -30
+      Z
+    "/>
+  </g>
+</svg>

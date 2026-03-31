@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 156 32" width="156" height="32">
+  <!-- ASpark — Horizontal Lockup (Compact, minimal whitespace) -->
+  <!-- Brand Color: Vermilion #E04E2A -->
+  <g transform="translate(14, 16)">
+    <path fill="#E04E2A" d="M 0 -13 C 3 -7.5, 7 -1, 7 4.5 C 7 8.5, 4 12, 0 13 C -4 12, -7 8.5, -7 4.5 C -7 -1, -3 -7.5, 0 -13 Z"/>
+    <path fill="#FFFFFF" d="M 0 -3 C 1 -0.5, 2.4 1.2, 2.4 3.5 C 2.4 5.2, 1.4 6.5, 0 7 C -1.4 6.5, -2.4 5.2, -2.4 3.5 C -2.4 1.2, -1 -0.5, 0 -3 Z"/>
+  </g>
+  <text x="28" y="22" font-family="-apple-system, 'SF Pro Display', 'Helvetica Neue', Arial, sans-serif" font-size="22" font-weight="600" letter-spacing="0.5" fill="#E04E2A">ASpark</text>
+</svg>

@@ -1,0 +1,19 @@
+{
+  "name": "saas",
+  "version": "1.0.0",
+  "description": "SaaS 应用生成技能包 - 订阅管理、多租户、计费系统、用户角色",
+  "tags": ["saas", "订阅", "计费", "多租户", "管理后台", "dashboard", "subscription", "billing", "tenant", "admin"],
+  "promptFragments": ["prompts/saas-guide.md"],
+  "templates": ["templates/**/*"],
+  "validators": [],
+  "requiredEntities": ["Organization", "Member", "Subscription", "Plan", "Invoice", "Feature", "AuditLog"],
+  "recommendedComponents": ["table", "card", "badge", "tabs", "dialog", "select", "switch", "progress", "avatar"],
+  "dependencies": [],
+  "examplePrompts": [
+    "帮我做一个 SaaS 管理后台",
+    "创建一个订阅制的平台",
+    "做一个多租户管理系统",
+    "Build a SaaS dashboard",
+    "Create a subscription management platform"
+  ]
+}
