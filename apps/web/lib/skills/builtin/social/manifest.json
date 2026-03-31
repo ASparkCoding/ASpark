@@ -1,0 +1,19 @@
+{
+  "name": "social",
+  "version": "1.0.0",
+  "description": "社交应用生成技能包 - 用户关系、Feed流、消息系统、互动功能",
+  "tags": ["社交", "社区", "消息", "聊天", "动态", "关注", "social", "community", "chat", "feed", "message", "follow"],
+  "promptFragments": ["prompts/social-guide.md"],
+  "templates": ["templates/**/*"],
+  "validators": [],
+  "requiredEntities": ["Profile", "Post", "Comment", "Like", "Follow", "Message", "Conversation", "Notification"],
+  "recommendedComponents": ["avatar", "card", "textarea", "badge", "separator", "scroll-area", "tabs", "dialog", "popover"],
+  "dependencies": [],
+  "examplePrompts": [
+    "帮我做一个社交平台",
+    "创建一个社区论坛",
+    "做一个类似微博的应用",
+    "Build a social media app",
+    "Create a community platform with feeds and messaging"
+  ]
+}

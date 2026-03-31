@@ -3,6 +3,8 @@ import { createMoonshotAI } from '@ai-sdk/moonshotai';
 import { createOpenAI } from '@ai-sdk/openai';
 import type { LanguageModel } from 'ai';
 import type { GenerationType, LLMProvider } from '@/types';
+import { classifyError, type ClassifiedError, ErrorCategory } from './error-classifier';
+import { costTracker } from '../cost-tracker';
 
 // ============================================================
 // 显式初始化所有 Provider，确保 API Key 和 Base URL 正确传入
@@ -155,13 +157,15 @@ export async function selectModelWithFallback<T>(
 
   for (let i = 0; i < chain.length; i++) {
     const entry = chain[i];
-    let lastError: Error | undefined;
+    let lastClassified: ClassifiedError | undefined;
 
     for (let retry = 0; retry <= maxRetries; retry++) {
       try {
         if (retry > 0) {
-          // 指数退避：200ms, 400ms, 800ms...
-          const delay = 200 * Math.pow(2, retry - 1);
+          // 带抖动的指数退避，防止惊群效应
+          const baseDelay = 200 * Math.pow(2, retry - 1);
+          const jitter = baseDelay * 0.25 * (Math.random() * 2 - 1);
+          const delay = Math.round(baseDelay + jitter);
           console.log(`[LLM Router] Retry ${retry}/${maxRetries} for ${entry.displayName} after ${delay}ms`);
           await new Promise(resolve => setTimeout(resolve, delay));
         }
@@ -170,23 +174,35 @@ export async function selectModelWithFallback<T>(
         const model = entry.createModel();
         return await attemptFn(model, entry.provider, entry.displayName);
       } catch (err) {
-        lastError = err instanceof Error ? err : new Error(String(err));
-        const isRateLimit = lastError.message.includes('429') || lastError.message.includes('rate limit');
-        const isTimeout = lastError.message.includes('timeout') || lastError.message.includes('ETIMEDOUT');
-        const isServerError = lastError.message.includes('500') || lastError.message.includes('502') || lastError.message.includes('503');
+        // ★ 增强错误分类：使用 error-classifier 精细分类
+        const classified = classifyError(err);
+        lastClassified = classified;
 
         console.warn(
-          `[LLM Router] ${entry.displayName} failed (retry ${retry}/${maxRetries}): ${lastError.message.slice(0, 100)}`
+          `[LLM Router] ${entry.displayName} failed [${classified.category}] (retry ${retry}/${maxRetries}): ${classified.message.slice(0, 120)}`
         );
 
-        // 如果是限流或服务端错误，当前模型不再重试，直接切换到下一个
-        if (isRateLimit || isServerError) {
-          console.log(`[LLM Router] ${isRateLimit ? 'Rate limited' : 'Server error'}, switching to fallback...`);
-          break;
+        // 根据恢复策略决定行为
+        switch (classified.recoveryStrategy) {
+          case 'switch_model':
+            // 限速/503: 不再重试当前模型，直接切换
+            console.log(`[LLM Router] Strategy: switch_model → fallback`);
+            retry = maxRetries + 1; // 跳出 retry 循环
+            break;
+          case 'compact_context':
+            // 上下文过载: 记录日志，允许上层处理
+            console.log(`[LLM Router] Strategy: compact_context → context overload detected`);
+            retry = maxRetries + 1;
+            break;
+          case 'abort':
+            // 不可恢复的错误（认证/输入格式）: 直接抛出
+            throw err;
+          default:
+            // retry_with_backoff / reduce_output_tokens: 继续重试
+            if (!classified.retryable || retry >= maxRetries) {
+              break;
+            }
         }
-
-        // 如果是超时，允许重试当前模型
-        if (!isTimeout && retry >= maxRetries) break;
       }
     }
 

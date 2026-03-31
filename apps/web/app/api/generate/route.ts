@@ -10,6 +10,11 @@ import { buildManager } from '@/lib/build/build-manager';
 import { selectRelevantFiles } from '@/lib/prompts/context-selector';
 import type { GenerationType, ConversationMessage } from '@/types';
 import { requireAuth, handleAuthError } from '@/lib/auth';
+// ★ Enhanced features
+import { costTracker } from '@/lib/cost-tracker';
+import { skillRegistry } from '@/lib/skills/skill-loader';
+import { selectAndCompact, estimateTokens } from '@/lib/llm/context-compactor';
+import { scanFiles } from '@/lib/security/code-classifier';
 
 export const runtime = 'nodejs';
 export const maxDuration = 300; // Gemini / Kimi reasoning + 代码生成需要更长时间
@@ -218,8 +223,30 @@ export async function POST(request: NextRequest) {
       moonshotai: { thinking: { type: 'enabled', budgetTokens: 8192 } },
     },
     onFinish: async ({ text, usage }) => {
+      // ★ Cost Tracking: 记录本次生成的 token 消耗
+      if (usage) {
+        costTracker.record({
+          inputTokens: usage.promptTokens || 0,
+          outputTokens: usage.completionTokens || 0,
+          model: modelName,
+          provider,
+          type: effectiveType,
+          timestamp: Date.now(),
+        });
+      }
+
       // 生成完成后：解析代码并保存文件（仅 LLM 生成的部分）
       const parsedFiles = parseGeneratedCode(text);
+
+      // ★ Security Scan: 对生成的代码进行安全扫描
+      if (parsedFiles.length > 0) {
+        const fileMap: Record<string, string> = {};
+        for (const f of parsedFiles) fileMap[f.path] = f.content;
+        const { summary: secSummary } = scanFiles(fileMap);
+        if (secSummary.critical > 0) {
+          console.warn(`[Security] ⚠ ${secSummary.critical} critical issues found in generated code`);
+        }
+      }
 
       // ★ Update build-manager status
       buildManager.complete(projectId, parsedFiles.length);
