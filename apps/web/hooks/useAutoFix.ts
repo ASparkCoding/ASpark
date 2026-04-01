@@ -103,7 +103,48 @@ export function useAutoFix({ projectId, generate }: UseAutoFixOptions) {
   }, []);
 
   /**
-   * Collect all current errors (Vite logs + runtime + route issues)
+   * ★ TS Diagnostics: 调用后端 TypeScript Service 获取类型错误
+   * 将 TS 诊断结果转为 auto-fix 兼容的错误格式
+   */
+  const fetchTsDiagnostics = useCallback(async (): Promise<ReturnType<typeof detectErrors>> => {
+    const { files } = useEditorStore.getState();
+    const tsFiles = files.filter(f => /\.(tsx?|jsx?)$/.test(f.path) && !f.path.includes('components/ui/'));
+    if (tsFiles.length === 0) return [];
+
+    try {
+      const fileMap: Record<string, string> = {};
+      for (const f of tsFiles.slice(0, 30)) fileMap[f.path] = f.content; // 限制数量避免过大
+
+      const res = await fetch(`/api/projects/${projectId}/diagnose`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ files: fileMap, action: 'diagnostics' }),
+      });
+
+      if (!res.ok) return [];
+
+      const { diagnostics } = await res.json() as {
+        diagnostics: Array<{ file: string; line: number; message: string; category: string; code: number }>;
+      };
+
+      // 只取 error 级别的诊断，转为 auto-fix 错误格式
+      return (diagnostics || [])
+        .filter(d => d.category === 'error')
+        .slice(0, 15) // 限制数量
+        .map(d => ({
+          type: 'typescript' as const,
+          file: d.file,
+          line: d.line,
+          message: `TS${d.code}: ${d.message}`,
+          rawLog: `${d.file}:${d.line} - TS${d.code}: ${d.message}`,
+        }));
+    } catch {
+      return []; // TS 诊断失败不阻断 auto-fix 流程
+    }
+  }, [projectId]);
+
+  /**
+   * Collect all current errors (Vite logs + runtime + route issues + TS diagnostics)
    */
   const collectErrors = useCallback((isFirstRound: boolean) => {
     const { previewLogs, files, runtimeErrors } = useEditorStore.getState();
@@ -315,6 +356,16 @@ export function useAutoFix({ projectId, generate }: UseAutoFixOptions) {
 
         const errors = collectErrors(fixCountRef.current === 0);
 
+        // ★ TS Diagnostics: 在 Vite 无错误时进行 TypeScript 类型检查
+        // 只在 Vite 错误清零后才检查 TS（Vite 报错时 TS 诊断噪声太多）
+        if (errors.length === 0) {
+          const tsDiags = await fetchTsDiagnostics();
+          if (tsDiags.length > 0) {
+            console.log(`[AutoFix] Vite clean, but ${tsDiags.length} TS type errors found`);
+            errors.push(...tsDiags);
+          }
+        }
+
         // No errors — verify and exit
         if (errors.length === 0) {
           await verifyAndFinish();
@@ -436,7 +487,7 @@ export function useAutoFix({ projectId, generate }: UseAutoFixOptions) {
   }, [
     projectId, generate, addChatMessage, setBuildPhase,
     syncFilesToDisk, waitForPreviewReady, waitForLogsToStabilize,
-    collectErrors, collectFixContext, applyFixAndWait,
+    collectErrors, collectFixContext, applyFixAndWait, fetchTsDiagnostics,
   ]);
 
   /**

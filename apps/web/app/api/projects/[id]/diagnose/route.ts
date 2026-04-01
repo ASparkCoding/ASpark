@@ -5,12 +5,14 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { typescriptService } from '@/lib/lsp/typescript-service';
+import { requireAuth, handleAuthError } from '@/lib/auth';
 
 export async function POST(
   req: NextRequest,
   { params }: { params: { id: string } }
 ) {
   try {
+    const auth = await requireAuth();
     const { files, action, filePath, position, errorCodes } = await req.json() as {
       files: Record<string, string>;
       action: 'diagnostics' | 'completions' | 'hover' | 'definition' | 'quickfix';
@@ -70,6 +72,8 @@ export async function POST(
         return NextResponse.json({ error: `Unknown action: ${action}` }, { status: 400 });
     }
   } catch (error) {
+    const authErr = handleAuthError(error);
+    if (authErr) return authErr;
     console.error('[Diagnose API Error]', error);
     return NextResponse.json({ error: 'Diagnosis failed' }, { status: 500 });
   }

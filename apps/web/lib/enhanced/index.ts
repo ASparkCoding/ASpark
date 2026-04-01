@@ -101,6 +101,7 @@ export {
   type ArchitecturePlan,
   type ValidationReport,
   type CoordinationResult,
+  type CoordinationProgress,
 } from '../agents/coordinator';
 
 // === 9. 推测执行 ===

@@ -155,7 +155,14 @@ export function usePlan({ projectId }: UsePlanOptions) {
       });
 
       if (!response.ok) {
-        throw new Error('生成 Plan 失败');
+        let errDetail = `HTTP ${response.status}`;
+        try {
+          const errBody = await response.json();
+          errDetail = errBody.error || errDetail;
+        } catch {
+          errDetail = await response.text().catch(() => errDetail);
+        }
+        throw new Error(`生成 Plan 失败: ${errDetail}`);
       }
 
       const reader = response.body?.getReader();

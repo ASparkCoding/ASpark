@@ -5,12 +5,14 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { runProactiveAnalysis, formatAnalysisAsSuggestions } from '@/lib/proactive/analyzer';
+import { requireAuth, handleAuthError } from '@/lib/auth';
 
 export async function POST(
   req: NextRequest,
   { params }: { params: { id: string } }
 ) {
   try {
+    const auth = await requireAuth();
     const { files } = await req.json() as { files: Record<string, string> };
 
     if (!files || Object.keys(files).length === 0) {
@@ -31,6 +33,8 @@ export async function POST(
       analyzedFiles: result.analyzedFiles,
     });
   } catch (error) {
+    const authErr = handleAuthError(error);
+    if (authErr) return authErr;
     console.error('[Analyze API Error]', error);
     return NextResponse.json(
       { error: 'Analysis failed' },

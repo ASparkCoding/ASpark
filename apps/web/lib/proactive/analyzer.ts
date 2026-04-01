@@ -298,6 +298,170 @@ const ANALYSIS_RULES: AnalysisRule[] = [
       return issues;
     },
   },
+
+  // === Enhanced Rules (Phase 4) ===
+
+  {
+    id: 'bp-missing-key-prop',
+    category: 'runtime',
+    severity: 'high',
+    title: '列表渲染缺少 key',
+    check: (files) => {
+      const issues: ProactiveIssue[] = [];
+      for (const [filePath, content] of Object.entries(files)) {
+        if (!/\.(tsx|jsx)$/.test(filePath)) continue;
+        // 检测 .map(() => <Xxx 但没有 key= 的情况
+        const mapBlocks = content.match(/\.map\s*\(\s*\(?[^)]*\)?\s*=>\s*(?:\(?\s*<[A-Z]\w*(?!\s[^>]*key=))/g);
+        if (mapBlocks && mapBlocks.length > 0) {
+          issues.push({
+            id: `bp-key-${filePath}`,
+            category: 'runtime',
+            severity: 'high',
+            title: '列表渲染缺少 key',
+            message: `${filePath} 中有 ${mapBlocks.length} 处 .map() 渲染可能缺少 key 属性`,
+            file: filePath,
+            suggestion: '为每个 .map() 渲染的顶层元素添加唯一的 key 属性',
+            autoFixable: true,
+            autoFixDescription: '为列表渲染添加 key 属性',
+          });
+        }
+      }
+      return issues;
+    },
+  },
+  {
+    id: 'bp-typescript-any',
+    category: 'best_practice',
+    severity: 'medium',
+    title: '使用了 any 类型',
+    check: (files) => {
+      const issues: ProactiveIssue[] = [];
+      for (const [filePath, content] of Object.entries(files)) {
+        if (!/\.(tsx?|ts)$/.test(filePath)) continue;
+        // 匹配明确的 : any 或 as any 使用
+        const anyMatches = content.match(/:\s*any\b|as\s+any\b/g);
+        if (anyMatches && anyMatches.length > 2) {
+          issues.push({
+            id: `bp-any-${filePath}`,
+            category: 'best_practice',
+            severity: 'medium',
+            title: '过多 any 类型',
+            message: `${filePath} 有 ${anyMatches.length} 处使用了 any 类型，降低了类型安全性`,
+            file: filePath,
+            suggestion: '用具体的 interface/type 替换 any 类型',
+            autoFixable: false,
+          });
+        }
+      }
+      return issues;
+    },
+  },
+  {
+    id: 'bp-unused-import',
+    category: 'best_practice',
+    severity: 'low',
+    title: '可能的未使用导入',
+    check: (files) => {
+      const issues: ProactiveIssue[] = [];
+      for (const [filePath, content] of Object.entries(files)) {
+        if (!/\.(tsx?|jsx?)$/.test(filePath)) continue;
+        const importLines = content.match(/^import\s+\{([^}]+)\}\s+from\s+/gm);
+        if (!importLines) continue;
+
+        const unusedImports: string[] = [];
+        for (const line of importLines) {
+          const namesMatch = line.match(/\{([^}]+)\}/);
+          if (!namesMatch) continue;
+          const names = namesMatch[1].split(',').map(n => n.trim().split(' as ').pop()!.trim()).filter(Boolean);
+          // 排除 type-only imports
+          if (line.includes('import type')) continue;
+          const codeWithoutImports = content.replace(/^import\s+.*$/gm, '');
+          for (const name of names) {
+            if (name.startsWith('type ')) continue;
+            // 检查在代码中是否使用（排除注释）
+            const codeNoComments = codeWithoutImports.replace(/\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '');
+            const usageRegex = new RegExp(`\\b${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`);
+            if (!usageRegex.test(codeNoComments)) {
+              unusedImports.push(name);
+            }
+          }
+        }
+
+        if (unusedImports.length > 0) {
+          issues.push({
+            id: `bp-unused-import-${filePath}`,
+            category: 'best_practice',
+            severity: 'low',
+            title: '未使用的导入',
+            message: `${filePath} 中可能未使用: ${unusedImports.slice(0, 5).join(', ')}${unusedImports.length > 5 ? ` (+${unusedImports.length - 5})` : ''}`,
+            file: filePath,
+            suggestion: '移除未使用的导入以减少包体积',
+            autoFixable: true,
+            autoFixDescription: '移除未使用的导入语句',
+          });
+        }
+      }
+      return issues;
+    },
+  },
+  {
+    id: 'perf-inline-function',
+    category: 'performance',
+    severity: 'info',
+    title: '渲染中的内联函数',
+    check: (files) => {
+      const issues: ProactiveIssue[] = [];
+      for (const [filePath, content] of Object.entries(files)) {
+        if (!/\.(tsx|jsx)$/.test(filePath)) continue;
+        // 检测 JSX 中的内联箭头函数 onClick={() => ...}
+        const inlineHandlers = content.match(/(?:onClick|onChange|onSubmit|onBlur|onFocus)=\{(?:\(\)\s*=>|\([^)]*\)\s*=>)/g);
+        if (inlineHandlers && inlineHandlers.length > 5) {
+          issues.push({
+            id: `perf-inline-${filePath}`,
+            category: 'performance',
+            severity: 'info',
+            title: '过多内联事件处理器',
+            message: `${filePath} 有 ${inlineHandlers.length} 个内联事件处理函数，每次渲染都会重建`,
+            file: filePath,
+            suggestion: '将事件处理函数提取为 useCallback 包裹的命名函数',
+            autoFixable: false,
+          });
+        }
+      }
+      return issues;
+    },
+  },
+  {
+    id: 'sec-hardcoded-url',
+    category: 'security',
+    severity: 'medium',
+    title: '硬编码的 API URL',
+    check: (files) => {
+      const issues: ProactiveIssue[] = [];
+      for (const [filePath, content] of Object.entries(files)) {
+        if (!/\.(tsx?|jsx?|ts)$/.test(filePath)) continue;
+        // 排除 .env 和配置文件
+        if (filePath.includes('.env') || filePath.includes('config')) continue;
+        const hardcodedUrls = content.match(/['"`](https?:\/\/(?!localhost)[^\s'"`)]+)['"`]/g);
+        if (hardcodedUrls && hardcodedUrls.length > 0) {
+          const isApiUrl = hardcodedUrls.some(u => /api\.|\/api\/|\.supabase\./i.test(u));
+          if (isApiUrl) {
+            issues.push({
+              id: `sec-url-${filePath}`,
+              category: 'security',
+              severity: 'medium',
+              title: '硬编码的 API URL',
+              message: `${filePath} 中有硬编码的 API 地址，应使用环境变量`,
+              file: filePath,
+              suggestion: '将 API URL 移到 .env 文件中，使用 import.meta.env.VITE_XXX 引用',
+              autoFixable: false,
+            });
+          }
+        }
+      }
+      return issues;
+    },
+  },
 ];
 
 // ======================== Proactive Analyzer ========================

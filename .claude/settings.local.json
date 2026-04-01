@@ -1,7 +1,9 @@
 {
   "permissions": {
     "allow": [
-      "Bash(xargs -I {} basename {})"
+      "Bash(xargs -I {} basename {})",
+      "Bash(ls -la /d/桌面/src/src/tools/*/index.ts)",
+      "Bash(grep -r auto-fixer D:/桌面/ASpark1.0.0/apps/web --include=*.ts --include=*.tsx)"
     ]
   }
 }

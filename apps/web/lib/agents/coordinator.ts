@@ -1,9 +1,16 @@
 /**
- * ASpark Multi-Agent Coordinator
- * 多代理协作系统 - 架构/前端/后端/QA 专精分工
+ * ASpark Multi-Agent Coordinator (v2)
+ * 多代理协作系统 - 真正接入 AI SDK + TaskManager
+ *
+ * 流程: Architect → (Frontend + Backend 并行) → QA 验证 → 修复
+ * 通过 taskManager 追踪每个 Agent 的进度
  */
 
+import { generateText } from 'ai';
+import { selectModel } from '@/lib/llm/router';
 import { taskManager, type TaskResult, type TaskType } from '../tasks/task-manager';
+import { parseGeneratedCode } from '@/lib/code-gen/parser';
+import type { GenerationType } from '@/types';
 
 // ======================== Types ========================
 
@@ -12,12 +19,9 @@ export type AgentRole = 'coordinator' | 'architect' | 'frontend' | 'backend' | '
 export interface AgentDefinition {
   name: string;
   role: AgentRole;
-  /** 专用 system prompt */
   systemPrompt: string;
-  /** 可用工具子集 */
-  capabilities: string[];
-  /** 推荐模型（快/平衡/强） */
-  modelPreference: 'fast' | 'balanced' | 'powerful';
+  /** 推荐模型类型（映射到 router 的 GenerationType） */
+  modelType: GenerationType;
   /** 负责的文件模式 */
   filePatterns: string[];
 }
@@ -36,14 +40,13 @@ export type AgentMessageType =
   | 'code_delivery'
   | 'validation_report'
   | 'fix_request'
-  | 'merge_request'
   | 'status_update';
 
 export interface ArchitecturePlan {
   entities: Array<{ name: string; fields: string[]; relationships: string[] }>;
   pages: Array<{ path: string; name: string; components: string[] }>;
   apiRoutes: Array<{ method: string; path: string; description: string }>;
-  dataModel: string; // SQL schema
+  dataModel: string;
   techDecisions: string[];
 }
 
@@ -51,142 +54,144 @@ export interface ValidationReport {
   passed: boolean;
   errors: Array<{ file: string; message: string; severity: 'error' | 'warning' }>;
   suggestions: string[];
-  needsRegeneration: AgentRole[];
+  needsFix: boolean;
 }
 
 export interface CoordinationResult {
   success: boolean;
-  files: Record<string, string>;
+  files: Array<{ path: string; content: string }>;
   plan?: ArchitecturePlan;
   validation?: ValidationReport;
   logs: AgentMessage[];
   duration: number;
+  taskGroupId?: string;
+}
+
+export interface CoordinationProgress {
+  phase: 'architecture' | 'parallel_generation' | 'validation' | 'fixing' | 'complete';
+  detail: string;
+  agentRole?: AgentRole;
+  progress: number; // 0-100
 }
 
 // ======================== Agent Definitions ========================
 
-export const AGENT_DEFINITIONS: Record<AgentRole, AgentDefinition> = {
+const AGENT_DEFS: Record<AgentRole, AgentDefinition> = {
   coordinator: {
     name: 'Coordinator',
     role: 'coordinator',
-    systemPrompt: `你是项目协调者。你的职责是：
-1. 分析用户需求，分解为子任务
-2. 分配任务给专业 Agent
-3. 合并各 Agent 的输出
-4. 解决冲突和不一致
-5. 确保最终交付物完整可用`,
-    capabilities: ['plan', 'merge', 'validate'],
-    modelPreference: 'powerful',
+    systemPrompt: '',
+    modelType: 'iterate',
     filePatterns: ['**/*'],
   },
   architect: {
     name: 'Architect',
     role: 'architect',
-    systemPrompt: `你是系统架构师 Agent。你的职责是：
-1. 设计数据模型和实体关系
-2. 规划页面结构和路由
-3. 定义 API 接口
-4. 做出技术决策
-只输出架构设计，不要写具体代码实现。`,
-    capabilities: ['design', 'plan'],
-    modelPreference: 'powerful',
+    systemPrompt: `你是系统架构师。根据用户需求输出 JSON 格式的架构设计。
+只输出设计，不写代码。
+
+输出格式 (strict JSON):
+{
+  "entities": [{"name": "...", "fields": ["id uuid PK", "name text", ...], "relationships": ["belongs_to User"]}],
+  "pages": [{"path": "/", "name": "Home", "components": ["Header", "HeroSection", "Footer"]}],
+  "apiRoutes": [{"method": "GET", "path": "/api/items", "description": "List items"}],
+  "dataModel": "CREATE TABLE ...",
+  "techDecisions": ["Use React Router for navigation", ...]
+}
+
+技术栈: React 18 + TypeScript + Tailwind CSS + shadcn/ui + Supabase + Vite
+可用 shadcn/ui 组件: Button, Card, Input, Select, Dialog, Tabs, Table, Badge, Avatar, Tooltip, DropdownMenu, Sheet, Separator, ScrollArea, Switch, Slider, Progress, Skeleton, Textarea, Label, Checkbox, RadioGroup, Alert, Popover, Command
+实体模式: createEntityService(supabase, 'table_name')`,
+    modelType: 'reason',
     filePatterns: [],
   },
   frontend: {
     name: 'Frontend Developer',
     role: 'frontend',
-    systemPrompt: `你是前端开发 Agent。你的职责是：
-1. 根据架构设计实现 React 组件和页面
-2. 使用 Tailwind CSS 和 shadcn/ui 构建 UI
-3. 实现路由和导航
-4. 处理表单和用户交互
-只生成前端相关文件（components/, pages/, hooks/）。`,
-    capabilities: ['code_frontend', 'ui_design'],
-    modelPreference: 'balanced',
+    systemPrompt: `你是前端开发专家。根据架构设计实现 React 组件和页面。
+
+规则:
+1. 使用 <file path="...">code</file> XML 格式输出
+2. 使用 Tailwind CSS 样式，不用内联 style
+3. 使用已安装的 shadcn/ui 组件（从 @/components/ui/ 导入）
+4. 页面放在 src/pages/，组件放在 src/components/
+5. 导入 Entity Service 用 @/entities/xxx
+6. 导入 Supabase 用 @/lib/supabase
+7. 每个文件必须完整，不能有省略号或 placeholder
+
+技术栈: React 18 + TypeScript + Tailwind CSS + shadcn/ui + React Router`,
+    modelType: 'scaffold',
     filePatterns: ['src/components/**', 'src/pages/**', 'src/hooks/**', 'src/App.tsx'],
   },
   backend: {
     name: 'Backend Developer',
     role: 'backend',
-    systemPrompt: `你是后端开发 Agent。你的职责是：
-1. 根据架构设计实现数据库 Schema
-2. 创建 Supabase 数据服务
-3. 实现业务逻辑和数据验证
-4. 设置 RLS 安全策略
-只生成后端相关文件（entities/, lib/data-service.ts, SQL schema）。`,
-    capabilities: ['code_backend', 'database'],
-    modelPreference: 'balanced',
-    filePatterns: ['src/entities/**', 'src/lib/data-service.ts', 'src/lib/supabase.ts', '*.sql'],
+    systemPrompt: `你是后端开发专家。根据架构设计实现数据库 Schema 和数据服务。
+
+规则:
+1. 使用 <file path="...">code</file> XML 格式输出
+2. SQL Schema 放在 supabase-schema.sql
+3. Entity Service 使用 createEntityService 模式:
+   import { supabase } from '@/lib/supabase';
+   export const xxxService = createEntityService(supabase, 'table_name');
+4. 必须包含 RLS 策略
+5. 每个文件必须完整
+
+技术栈: Supabase (PostgreSQL) + TypeScript`,
+    modelType: 'scaffold',
+    filePatterns: ['src/entities/**', 'src/lib/data-service.ts', '*.sql'],
   },
   qa: {
     name: 'QA Engineer',
     role: 'qa',
-    systemPrompt: `你是 QA 工程师 Agent。你的职责是：
-1. 验证代码的一致性和完整性
-2. 检查导入/导出是否正确
-3. 验证路由和页面结构
-4. 检查数据模型和 API 的一致性
-5. 发现潜在的 bug 和安全问题
-输出验证报告和修复建议。`,
-    capabilities: ['validate', 'review'],
-    modelPreference: 'fast',
+    systemPrompt: `你是 QA 工程师。验证代码一致性并输出验证报告。
+
+检查清单:
+1. 导入路径是否指向实际存在的文件
+2. 路由配置是否与页面文件匹配
+3. Entity Service 调用是否与 SQL Schema 一致
+4. 组件 props 类型是否正确
+5. 是否缺少必要文件（App.tsx, main.tsx 等）
+
+输出格式 (strict JSON):
+{
+  "passed": true/false,
+  "errors": [{"file": "path", "message": "description", "severity": "error"|"warning"}],
+  "suggestions": ["suggestion text"],
+  "needsFix": true/false
+}`,
+    modelType: 'complete',
     filePatterns: ['**/*'],
   },
 };
 
-// ======================== Message Bus ========================
+// ======================== LLM Call Helper ========================
 
-class MessageBus {
-  private messages: AgentMessage[] = [];
-  private listeners: Map<AgentRole, Array<(msg: AgentMessage) => void>> = new Map();
+async function callAgent(
+  role: AgentRole,
+  userPrompt: string,
+  maxTokens: number = 16000,
+): Promise<string> {
+  const def = AGENT_DEFS[role];
+  const model = selectModel({ type: def.modelType, contextLength: def.systemPrompt.length + userPrompt.length });
 
-  send(message: Omit<AgentMessage, 'timestamp'>): void {
-    const msg: AgentMessage = { ...message, timestamp: Date.now() };
-    this.messages.push(msg);
+  const { text } = await generateText({
+    model,
+    system: def.systemPrompt,
+    prompt: userPrompt,
+    maxOutputTokens: maxTokens,
+  });
 
-    // 通知监听者
-    if (msg.to === 'all') {
-      for (const [, handlers] of this.listeners) {
-        handlers.forEach(h => h(msg));
-      }
-    } else {
-      const handlers = this.listeners.get(msg.to) || [];
-      handlers.forEach(h => h(msg));
-    }
-  }
-
-  subscribe(role: AgentRole, handler: (msg: AgentMessage) => void): () => void {
-    if (!this.listeners.has(role)) {
-      this.listeners.set(role, []);
-    }
-    this.listeners.get(role)!.push(handler);
-
-    return () => {
-      const handlers = this.listeners.get(role);
-      if (handlers) {
-        const idx = handlers.indexOf(handler);
-        if (idx >= 0) handlers.splice(idx, 1);
-      }
-    };
-  }
-
-  getHistory(): AgentMessage[] {
-    return [...this.messages];
-  }
-
-  clear(): void {
-    this.messages = [];
-    this.listeners.clear();
-  }
+  return text;
 }
 
 // ======================== Agent Coordinator ========================
 
 export class AgentCoordinator {
-  private messageBus: MessageBus = new MessageBus();
-  private onProgress?: (phase: string, detail: string) => void;
+  private logs: AgentMessage[] = [];
+  private onProgress?: (progress: CoordinationProgress) => void;
 
-  constructor(options?: { onProgress?: (phase: string, detail: string) => void }) {
+  constructor(options?: { onProgress?: (progress: CoordinationProgress) => void }) {
     this.onProgress = options?.onProgress;
   }
 
@@ -194,126 +199,151 @@ export class AgentCoordinator {
    * 协调多个 Agent 完成完整的应用生成
    *
    * 流程:
-   * 1. Architect Agent → 生成架构设计
+   * 1. Architect Agent → 设计架构 (JSON)
    * 2. Frontend + Backend Agents → 并行生成代码
-   * 3. QA Agent → 验证和修复
-   * 4. Coordinator → 合并最终结果
+   * 3. QA Agent → 验证一致性
+   * 4. 如有问题 → 自动修复一轮
    */
   async orchestrate(
     prompt: string,
-    existingFiles: Record<string, string>,
-    generateFn: (systemPrompt: string, userPrompt: string, model: string) => Promise<string>
+    existingFiles: Array<{ path: string; content: string }>,
   ): Promise<CoordinationResult> {
     const startTime = Date.now();
+    this.logs = [];
+
+    // 创建 TaskManager 任务组
+    const architectTask = taskManager.createTask({
+      type: 'custom',
+      name: 'Architecture Design',
+      description: '架构师设计系统结构',
+      execute: async () => {
+        const plan = await this.runArchitect(prompt);
+        return { data: plan };
+      },
+    });
 
     try {
-      // Phase 1: 架构设计
-      this.onProgress?.('architecture', '架构师正在设计系统...');
-      const plan = await this.runArchitect(prompt, generateFn);
+      // ═══ Phase 1: Architecture ═══
+      this.emitProgress('architecture', '架构师正在设计系统结构...', 'architect', 10);
+      await taskManager.executeTask(architectTask);
+      const plan = architectTask.result?.data as ArchitecturePlan;
 
-      this.messageBus.send({
-        from: 'architect',
-        to: 'all',
-        type: 'architecture_plan',
-        payload: plan,
-      });
-
-      // Phase 2: 并行生成前端和后端
-      this.onProgress?.('parallel_generation', '前端和后端正在并行生成...');
-      const [frontendResult, backendResult] = await Promise.allSettled([
-        this.runFrontend(prompt, plan, existingFiles, generateFn),
-        this.runBackend(prompt, plan, existingFiles, generateFn),
-      ]);
-
-      const frontendFiles = frontendResult.status === 'fulfilled' ? frontendResult.value : {};
-      const backendFiles = backendResult.status === 'fulfilled' ? backendResult.value : {};
-
-      // 合并文件
-      const mergedFiles = { ...existingFiles, ...backendFiles, ...frontendFiles };
-
-      this.messageBus.send({
-        from: 'frontend',
-        to: 'coordinator',
-        type: 'code_delivery',
-        payload: { fileCount: Object.keys(frontendFiles).length },
-      });
-
-      this.messageBus.send({
-        from: 'backend',
-        to: 'coordinator',
-        type: 'code_delivery',
-        payload: { fileCount: Object.keys(backendFiles).length },
-      });
-
-      // Phase 3: QA 验证
-      this.onProgress?.('validation', 'QA 正在验证代码...');
-      const validation = await this.runQA(mergedFiles, plan, generateFn);
-
-      this.messageBus.send({
-        from: 'qa',
-        to: 'coordinator',
-        type: 'validation_report',
-        payload: validation,
-      });
-
-      // Phase 4: 如果有问题需要修复
-      let finalFiles = mergedFiles;
-      if (!validation.passed && validation.needsRegeneration.length > 0) {
-        this.onProgress?.('fixing', '修复验证发现的问题...');
-        finalFiles = await this.applyFixes(mergedFiles, validation, plan, generateFn);
+      if (!plan || !plan.pages || plan.pages.length === 0) {
+        return this.fail(existingFiles, startTime, 'Architecture design returned empty plan');
       }
 
-      this.onProgress?.('complete', '协作完成');
+      this.log('architect', 'all', 'architecture_plan', {
+        entities: plan.entities?.length || 0,
+        pages: plan.pages?.length || 0,
+      });
+
+      // ═══ Phase 2: Parallel Frontend + Backend ═══
+      this.emitProgress('parallel_generation', '前端和后端并行生成中...', undefined, 30);
+
+      const frontendTask = taskManager.createTask({
+        type: 'frontend',
+        name: 'Frontend Generation',
+        description: '前端开发生成组件和页面',
+        execute: async () => {
+          const files = await this.runFrontend(prompt, plan);
+          return { files };
+        },
+      });
+
+      const backendTask = taskManager.createTask({
+        type: 'backend',
+        name: 'Backend Generation',
+        description: '后端开发生成数据模型和服务',
+        execute: async () => {
+          const files = await this.runBackend(prompt, plan);
+          return { files };
+        },
+      });
+
+      // 并行执行
+      const [frontendResult, backendResult] = await Promise.allSettled([
+        taskManager.executeTask(frontendTask),
+        taskManager.executeTask(backendTask),
+      ]);
+
+      const frontendFiles = frontendResult.status === 'fulfilled' ? (frontendTask.result?.files || {}) : {};
+      const backendFiles = backendResult.status === 'fulfilled' ? (backendTask.result?.files || {}) : {};
+
+      this.log('frontend', 'coordinator', 'code_delivery', { fileCount: Object.keys(frontendFiles).length });
+      this.log('backend', 'coordinator', 'code_delivery', { fileCount: Object.keys(backendFiles).length });
+
+      // 合并所有文件（后端先，前端覆盖，保证 App.tsx 等入口以前端为准）
+      const mergedMap: Record<string, string> = {};
+      for (const f of existingFiles) mergedMap[f.path] = f.content;
+      Object.assign(mergedMap, backendFiles, frontendFiles);
+
+      this.emitProgress('parallel_generation', `生成完成: 前端 ${Object.keys(frontendFiles).length} 文件, 后端 ${Object.keys(backendFiles).length} 文件`, undefined, 60);
+
+      // ═══ Phase 3: QA Validation ═══
+      this.emitProgress('validation', 'QA 正在验证代码一致性...', 'qa', 75);
+
+      const qaTask = taskManager.createTask({
+        type: 'validate',
+        name: 'QA Validation',
+        description: 'QA 工程师验证代码一致性',
+        execute: async () => {
+          const validation = await this.runQA(mergedMap, plan);
+          return { data: validation };
+        },
+      });
+
+      await taskManager.executeTask(qaTask);
+      const validation = qaTask.result?.data as ValidationReport;
+
+      this.log('qa', 'coordinator', 'validation_report', validation);
+
+      // ═══ Phase 4: Fix if needed ═══
+      let finalMap = mergedMap;
+      if (validation && validation.needsFix && validation.errors.length > 0) {
+        this.emitProgress('fixing', `修复 ${validation.errors.length} 个问题...`, undefined, 85);
+        finalMap = await this.applyFixes(mergedMap, validation, plan);
+      }
+
+      this.emitProgress('complete', '多 Agent 协作完成', undefined, 100);
+
+      // 转为 array 格式
+      const finalFiles = Object.entries(finalMap).map(([path, content]) => ({ path, content }));
 
       return {
         success: true,
         files: finalFiles,
         plan,
         validation,
-        logs: this.messageBus.getHistory(),
+        logs: this.logs,
         duration: Date.now() - startTime,
       };
     } catch (error) {
-      return {
-        success: false,
-        files: existingFiles,
-        logs: this.messageBus.getHistory(),
-        duration: Date.now() - startTime,
-      };
+      console.error('[Coordinator] Orchestration failed:', error);
+      return this.fail(existingFiles, startTime, (error as Error).message);
+    } finally {
+      taskManager.cleanup();
     }
   }
 
   // ======================== Agent Runners ========================
 
-  private async runArchitect(
-    prompt: string,
-    generateFn: (systemPrompt: string, userPrompt: string, model: string) => Promise<string>
-  ): Promise<ArchitecturePlan> {
-    const def = AGENT_DEFINITIONS.architect;
+  private async runArchitect(prompt: string): Promise<ArchitecturePlan> {
     const userPrompt = `根据以下需求，设计完整的系统架构。
 
 需求: ${prompt}
 
-请输出 JSON 格式的架构设计，包含：
-- entities: 数据实体列表（名称、字段、关系）
-- pages: 页面列表（路径、名称、包含的组件）
-- apiRoutes: API 路由列表
-- dataModel: SQL 建表语句
-- techDecisions: 技术决策说明
+输出 strict JSON（不要 markdown 代码块，不要额外说明）:`;
 
-只输出 JSON，不要其他内容。`;
-
-    const result = await generateFn(def.systemPrompt, userPrompt, def.modelPreference);
+    const result = await callAgent('architect', userPrompt, 4096);
 
     try {
-      // 尝试提取 JSON
       const jsonMatch = result.match(/\{[\s\S]*\}/);
       if (jsonMatch) {
         return JSON.parse(jsonMatch[0]) as ArchitecturePlan;
       }
-    } catch { /* fallback below */ }
+    } catch { /* fallback */ }
 
-    // Fallback: 返回基础架构
+    // Fallback: 从 prompt 推断基础架构
     return {
       entities: [],
       pages: [{ path: '/', name: 'Home', components: ['Header', 'Main', 'Footer'] }],
@@ -323,13 +353,7 @@ export class AgentCoordinator {
     };
   }
 
-  private async runFrontend(
-    prompt: string,
-    plan: ArchitecturePlan,
-    existingFiles: Record<string, string>,
-    generateFn: (systemPrompt: string, userPrompt: string, model: string) => Promise<string>
-  ): Promise<Record<string, string>> {
-    const def = AGENT_DEFINITIONS.frontend;
+  private async runFrontend(prompt: string, plan: ArchitecturePlan): Promise<Record<string, string>> {
     const planSummary = this.summarizePlan(plan);
 
     const userPrompt = `基于以下架构设计，实现所有前端组件和页面。
@@ -342,85 +366,59 @@ ${planSummary}
 页面列表:
 ${plan.pages.map(p => `- ${p.path}: ${p.name} (组件: ${p.components.join(', ')})`).join('\n')}
 
-请用 <file path="...">code</file> 格式输出所有前端文件。`;
+实体列表:
+${plan.entities.map(e => `- ${e.name}: ${e.fields.join(', ')}`).join('\n')}
 
-    const result = await generateFn(def.systemPrompt, userPrompt, def.modelPreference);
-    return this.extractFiles(result);
+请用 <file path="...">code</file> 格式输出所有前端文件。
+必须包含: src/App.tsx (路由配置), 所有页面, 所有组件。`;
+
+    const result = await callAgent('frontend', userPrompt, 32000);
+    return this.extractFileMap(result);
   }
 
-  private async runBackend(
-    prompt: string,
-    plan: ArchitecturePlan,
-    existingFiles: Record<string, string>,
-    generateFn: (systemPrompt: string, userPrompt: string, model: string) => Promise<string>
-  ): Promise<Record<string, string>> {
-    const def = AGENT_DEFINITIONS.backend;
-
+  private async runBackend(prompt: string, plan: ArchitecturePlan): Promise<Record<string, string>> {
     const userPrompt = `基于以下架构设计，实现所有后端数据服务。
 
 原始需求: ${prompt}
 
 数据实体:
-${plan.entities.map(e => `- ${e.name}: ${e.fields.join(', ')}`).join('\n')}
+${plan.entities.map(e => `- ${e.name}: 字段 [${e.fields.join(', ')}], 关系 [${e.relationships.join(', ')}]`).join('\n')}
 
-SQL Schema:
-${plan.dataModel}
+SQL Schema 参考:
+${plan.dataModel || '(请根据实体设计生成)'}
 
-请用 <file path="...">code</file> 格式输出所有后端文件（entities, data-service, schema SQL）。`;
+请用 <file path="...">code</file> 格式输出:
+1. supabase-schema.sql (建表 + RLS)
+2. src/entities/ 下每个实体的 service 文件
+3. src/lib/supabase.ts (如果还没有)`;
 
-    const result = await generateFn(def.systemPrompt, userPrompt, def.modelPreference);
-    return this.extractFiles(result);
+    const result = await callAgent('backend', userPrompt, 16000);
+    return this.extractFileMap(result);
   }
 
-  private async runQA(
-    files: Record<string, string>,
-    plan: ArchitecturePlan,
-    generateFn: (systemPrompt: string, userPrompt: string, model: string) => Promise<string>
-  ): Promise<ValidationReport> {
-    const def = AGENT_DEFINITIONS.qa;
-
-    // 构建文件清单
+  private async runQA(files: Record<string, string>, plan: ArchitecturePlan): Promise<ValidationReport> {
+    // 构建文件清单和导入关系
     const fileList = Object.entries(files)
-      .filter(([path]) => /\.(tsx?|jsx?)$/.test(path))
+      .filter(([p]) => /\.(tsx?|jsx?|sql)$/.test(p))
       .map(([path, content]) => {
-        const lines = content.split('\n').length;
-        return `${path} (${lines} lines)`;
+        const imports = content.match(/^import\s+.*from\s+['"].*['"]/gm) || [];
+        const lineCount = content.split('\n').length;
+        return `${path} (${lineCount} lines):\n  imports: ${imports.map(i => i.replace(/^import\s+/, '').trim()).join(', ') || 'none'}`;
       })
       .join('\n');
 
-    // 构建导入检查上下文
-    const importContext = Object.entries(files)
-      .filter(([path]) => /\.(tsx?|jsx?)$/.test(path))
-      .map(([path, content]) => {
-        const imports = content.match(/^import\s+.*from\s+['"].*['"]/gm) || [];
-        return `${path}:\n${imports.join('\n')}`;
-      })
-      .join('\n\n');
-
     const userPrompt = `验证以下项目的代码一致性。
 
-文件列表:
+文件及导入关系:
 ${fileList}
 
-导入关系:
-${importContext}
+架构计划:
+- 页面: ${plan.pages.map(p => `${p.name}(${p.path})`).join(', ')}
+- 实体: ${plan.entities.map(e => e.name).join(', ')}
 
-架构计划中的页面:
-${plan.pages.map(p => p.path).join(', ')}
+输出 strict JSON（不要 markdown 代码块）:`;
 
-架构计划中的实体:
-${plan.entities.map(e => e.name).join(', ')}
-
-请检查：
-1. 所有导入是否能解析到实际存在的文件
-2. 路由是否与页面列表一致
-3. 实体类型是否与数据服务一致
-4. 是否缺少必要文件
-
-输出 JSON 格式的验证报告：
-{ "passed": boolean, "errors": [...], "suggestions": [...], "needsRegeneration": [...] }`;
-
-    const result = await generateFn(def.systemPrompt, userPrompt, def.modelPreference);
+    const result = await callAgent('qa', userPrompt, 4096);
 
     try {
       const jsonMatch = result.match(/\{[\s\S]*\}/);
@@ -429,37 +427,44 @@ ${plan.entities.map(e => e.name).join(', ')}
       }
     } catch { /* fallback */ }
 
-    return { passed: true, errors: [], suggestions: [], needsRegeneration: [] };
+    return { passed: true, errors: [], suggestions: [], needsFix: false };
   }
 
   private async applyFixes(
     files: Record<string, string>,
     validation: ValidationReport,
     plan: ArchitecturePlan,
-    generateFn: (systemPrompt: string, userPrompt: string, model: string) => Promise<string>
   ): Promise<Record<string, string>> {
-    // 简化修复：将错误信息注入到 prompt 中重新生成有问题的部分
     const errorSummary = validation.errors
-      .map(e => `[${e.severity}] ${e.file}: ${e.message}`)
+      .filter(e => e.severity === 'error')
+      .slice(0, 10)
+      .map(e => `- [${e.severity}] ${e.file}: ${e.message}`)
       .join('\n');
 
-    const fixPrompt = `以下代码存在问题，请修复：
+    const relevantFileContents = validation.errors
+      .map(e => e.file)
+      .filter((f, i, arr) => arr.indexOf(f) === i)
+      .slice(0, 5)
+      .map(f => files[f] ? `<file path="${f}">\n${files[f]}\n</file>` : '')
+      .filter(Boolean)
+      .join('\n\n');
 
-问题列表:
+    const fixPrompt = `以下代码存在问题，请修复。只输出需要修改的文件。
+
+## 问题列表
 ${errorSummary}
 
-修复建议:
-${validation.suggestions.join('\n')}
+## 修复建议
+${validation.suggestions.slice(0, 5).join('\n')}
 
-请只输出需要修改的文件，使用 <file path="...">code</file> 格式。`;
+## 当前相关文件
+${relevantFileContents}
 
-    const result = await generateFn(
-      AGENT_DEFINITIONS.coordinator.systemPrompt,
-      fixPrompt,
-      'powerful'
-    );
+请用 <file path="...">code</file> 格式输出修复后的文件。`;
 
-    const fixedFiles = this.extractFiles(result);
+    const result = await callAgent('frontend', fixPrompt, 16000);
+    const fixedFiles = this.extractFileMap(result);
+
     return { ...files, ...fixedFiles };
   }
 
@@ -467,22 +472,58 @@ ${validation.suggestions.join('\n')}
 
   private summarizePlan(plan: ArchitecturePlan): string {
     const parts: string[] = [];
-    parts.push(`实体: ${plan.entities.map(e => e.name).join(', ')}`);
-    parts.push(`页面: ${plan.pages.map(p => `${p.name}(${p.path})`).join(', ')}`);
-    parts.push(`API: ${plan.apiRoutes.map(r => `${r.method} ${r.path}`).join(', ')}`);
-    parts.push(`技术决策: ${plan.techDecisions.join('; ')}`);
+    if (plan.entities.length > 0) {
+      parts.push(`实体: ${plan.entities.map(e => e.name).join(', ')}`);
+    }
+    if (plan.pages.length > 0) {
+      parts.push(`页面: ${plan.pages.map(p => `${p.name}(${p.path})`).join(', ')}`);
+    }
+    if (plan.apiRoutes.length > 0) {
+      parts.push(`API: ${plan.apiRoutes.map(r => `${r.method} ${r.path}`).join(', ')}`);
+    }
+    if (plan.techDecisions.length > 0) {
+      parts.push(`技术决策: ${plan.techDecisions.join('; ')}`);
+    }
     return parts.join('\n');
   }
 
-  private extractFiles(content: string): Record<string, string> {
+  private extractFileMap(content: string): Record<string, string> {
+    const parsed = parseGeneratedCode(content);
     const files: Record<string, string> = {};
-    const fileRegex = /<file\s+path="([^"]+)">([\s\S]*?)<\/file>/g;
-    let match;
-
-    while ((match = fileRegex.exec(content)) !== null) {
-      files[match[1]] = match[2].trim();
+    for (const f of parsed) {
+      files[f.path] = f.content;
     }
-
     return files;
   }
+
+  private log(from: AgentRole, to: AgentRole | 'all', type: AgentMessageType, payload: unknown): void {
+    this.logs.push({ from, to, type, payload, timestamp: Date.now() });
+  }
+
+  private emitProgress(
+    phase: CoordinationProgress['phase'],
+    detail: string,
+    agentRole?: AgentRole,
+    progress: number = 0,
+  ): void {
+    this.onProgress?.({ phase, detail, agentRole, progress });
+  }
+
+  private fail(
+    existingFiles: Array<{ path: string; content: string }>,
+    startTime: number,
+    error: string,
+  ): CoordinationResult {
+    this.log('coordinator', 'all', 'status_update', { error });
+    return {
+      success: false,
+      files: existingFiles,
+      logs: this.logs,
+      duration: Date.now() - startTime,
+    };
+  }
 }
+
+// ======================== Exports ========================
+
+export { AGENT_DEFS as AGENT_DEFINITIONS };

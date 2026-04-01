@@ -294,7 +294,11 @@ export function useGeneration({ projectId }: UseGenerationOptions) {
           }
         }
 
-        const response = await fetch('/api/generate', {
+        // ★ 多 Agent 协调生成：scaffold 且 prompt 较复杂时使用
+        const useCoordinated = generationType === 'scaffold' && prompt.length >= 20;
+        const generateUrl = useCoordinated ? '/api/generate/coordinated' : '/api/generate';
+
+        const response = await fetch(generateUrl, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({

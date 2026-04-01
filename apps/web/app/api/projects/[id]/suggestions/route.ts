@@ -29,12 +29,16 @@ export async function POST(
         maxOutputTokens: 1024,
       });
 
-      const jsonMatch = text.match(/\[[\s\S]*\]/);
+      const jsonMatch = text.match(/\[[\s\S]*?\]/);
       if (jsonMatch) {
-        const suggestions = JSON.parse(jsonMatch[0])
-          .filter((s: { label?: string; prompt?: string }) => s.label && s.prompt)
-          .slice(0, 4);
-        return Response.json({ suggestions });
+        try {
+          const suggestions = JSON.parse(jsonMatch[0])
+            .filter((s: { label?: string; prompt?: string }) => s.label && s.prompt && s.prompt.trim().length > 0)
+            .slice(0, 4);
+          return Response.json({ suggestions });
+        } catch {
+          console.warn('[Suggestions] Failed to parse JSON from LLM output');
+        }
       }
 
       return Response.json({ suggestions: [] });
